@@ -1,0 +1,104 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from xgboost import XGBRegressor
+import chatbot 
+
+st.set_page_config(page_title="Capital Pulse", layout="wide")
+st.title("AI Stock Market Webapp")
+
+def prepare_data_for_training(df):
+    data = df.copy()
+    data["Return"] = data["Close"].pct_change()
+    for lag in range(1, 6):
+        data[f"Ret_Lag_{lag}"] = data["Return"].shift(lag)
+    data["Vol_5"] = data["Return"].rolling(5).std().shift(1)
+    data["Vol_10"] = data["Return"].rolling(10).std().shift(1)
+    data["Target_Next_Return"] = data["Return"].shift(-1)
+    return data.dropna()
+
+def forecast_returns(model, last_rows_df, last_known_price, n_days=7):
+    current_data = last_rows_df.iloc[-1:].copy()
+    future_prices = []
+    current_price = last_known_price
+    
+    for _ in range(n_days):
+        features = [col for col in current_data.columns if "Target" not in col and "Close" not in col and "Return" != col]
+        X_curr = current_data[features]
+        pred_return = model.predict(X_curr)[0]
+        next_price = current_price * (1 + pred_return)
+        future_prices.append(next_price)
+        
+        new_row = current_data.copy()
+        for i in range(5, 1, -1):
+            new_row[f"Ret_Lag_{i}"] = new_row[f"Ret_Lag_{i-1}"]
+        new_row["Ret_Lag_1"] = pred_return
+        current_data = new_row
+        current_price = next_price
+        
+    return np.array(future_prices)
+
+uploaded_file = st.file_uploader("Upload Stock CSV", type=["csv"])
+
+if uploaded_file:
+    df = pd.read_csv(uploaded_file, parse_dates=["Date"])
+    df.sort_values("Date", inplace=True)
+    df.set_index("Date", inplace=True)
+    
+    st.subheader("Forecast Analysis")
+    
+    df_train = prepare_data_for_training(df)
+    feature_cols = [c for c in df_train.columns if "Target" not in c and "Close" not in c and "Return" != c]
+    X = df_train[feature_cols]
+    y = df_train["Target_Next_Return"]
+    
+    model = XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.05)
+    model.fit(X, y)
+    
+    train_preds = model.predict(X)
+    residuals = y - train_preds
+    sigma = residuals.std() 
+    
+    with st.spinner("Calculating future scenarios..."):
+        last_price = df["Close"].iloc[-1]
+        forecast_vals = forecast_returns(model, df_train, last_price, n_days=7)
+    
+    future_dates = pd.date_range(df.index[-1], periods=8)[1:]
+    days_out = np.arange(1, 8)
+    uncertainty_multiplier = 1.96 * sigma * np.sqrt(days_out)
+    upper_bound = forecast_vals * (1 + uncertainty_multiplier)
+    lower_bound = forecast_vals * (1 - uncertainty_multiplier)
+
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### 1. Historical Context (90 Days)")
+        fig1, ax1 = plt.subplots(figsize=(10, 6))
+        ax1.plot(df.index[-90:], df["Close"].tail(90), label="History", color="#1f77b4", linewidth=2)
+        ax1.plot(future_dates, forecast_vals, label="AI Prediction", color="orange", linestyle="--", linewidth=2)
+        ax1.set_title("Market Trend & Prediction")
+        ax1.legend()
+        ax1.grid(True, alpha=0.2)
+        st.pyplot(fig1)
+
+    with col2:
+        st.markdown("### 2. 7-Day Forecast & Confidence")
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        ax2.plot(future_dates, forecast_vals, label="Forecast", color="#ff7f0e", marker="o", linewidth=2)
+        ax2.fill_between(future_dates, lower_bound, upper_bound, color='#ff7f0e', alpha=0.2, label="95% Confidence Interval")
+        
+        for i, txt in enumerate(forecast_vals):
+            ax2.annotate(f"{txt:.1f}", (future_dates[i], forecast_vals[i]), textcoords="offset points", xytext=(0,10), ha='center', fontsize=8)
+
+        ax2.set_title(f"Next 7 Days (Projected Range: {lower_bound[-1]:.1f} - {upper_bound[-1]:.1f})")
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        st.pyplot(fig2)
+    
+    st.divider()
+    
+    chatbot.render_chatbot(df)
+
+else:
+    st.info("Please upload a CSV file to begin.")
