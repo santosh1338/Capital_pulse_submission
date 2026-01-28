@@ -34,8 +34,3 @@
 
 ### Prerequisites
 * Python 3.9 or higher (Tested on Python 3.13)
-
-### 1. Clone the Repository
-```bash
-git clone [https://github.com/yourusername/capital-pulse.git](https://github.com/yourusername/capital-pulse.git)
-cd capital-pulse
